@@ -20,7 +20,7 @@ import time
 from PIL import Image, ImageDraw, ImageFont
 from faker import Faker
 
-config = {"root": "/data"}
+config = {"root": "data"}
 
 
 def num(str):
@@ -28,8 +28,16 @@ def num(str):
 
 
 def write_file(path, content):
-    with open(os.path.join(config["root"], path), "w", encoding="utf-8") as f:
-        f.write(content)
+    """
+    Writes the given content to a file at the specified path.
+    """
+    full_path = os.path.join(config["root"], path)
+    try:
+        with open(full_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"Content successfully written to {full_path}")
+    except Exception as e:
+        print(f"An error occurred while writing to the file: {e}")
 
 
 def get_markdown(email):
