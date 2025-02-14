@@ -38,3 +38,5 @@ This project aims to automate _routine operational and business tasks_ using an 
  ┣ 📜 README.md          # Project documentation
  ┣ 📜 .env       # Environment variable template
 ```
+
+#
