@@ -1,12 +1,11 @@
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, JSONResponse, FileResponse
+from fastapi.responses import JSONResponse
 import urllib.request
 from urllib.parse import urlparse
 import subprocess
 import os
 import json
-import csv
 import sys
 import httpx
 import uuid
@@ -30,6 +29,7 @@ app.add_middleware(
 
 @app.get("/")
 async def home():
+    print("Handling / request")
     return JSONResponse(content={"message": "Successfully rendering app"})
 
 API_KEY = os.getenv("AIPROXY_TOKEN")
@@ -88,18 +88,22 @@ def write_cost_response(response):
         with open("cost_response.json", "w") as cost_file:
             json.dump(response_json, cost_file, indent=4)
     except Exception as e:
-        print(f"Failed to write response: {e}")
+        print(f"❌ Failed to write response: {e}")
 
 async def run_script(filename: str):
+    print(f"Running script: {filename}")
     try:
-        process = await asyncio.create_subprocess_exec(sys.executable, filename,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
-        return {"status": "success" if process.returncode == 0 else "error", 
-                "output": stdout.decode().strip() if process.returncode == 0 else stderr.decode().strip()}
-    except asyncio.TimeoutError:
-        process.kill()
-        return {"status": "error", "output": "Execution timed out!"}
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, filename,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode == 0:
+            return {"status": "success", "output": stdout.decode().strip()}
+        else:
+            return {"status": "error", "output": stderr.decode().strip()}
     except Exception as e:
         return {"status": "error", "output": str(e)}
 
@@ -130,7 +134,7 @@ async def translate_to_english(user_input: str) -> dict:
     print(f"Translating text to English: {user_input}")
     if is_english_string(user_input):
         return {"status": "success", "output": user_input}
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             response = await client.post(
                 BASE_URL + "/chat/completions",
@@ -207,7 +211,7 @@ async def generate_python_script(task_description: str) -> str:
         {"role": "system", "content": system_prompts},  # Keep system prompt
         {"role": "user", "content": task_description}   # Fresh user input
     ]
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=15.0) as client:
         try:
             response = await client.post(
                 BASE_URL + "/chat/completions",
@@ -215,7 +219,7 @@ async def generate_python_script(task_description: str) -> str:
                 json={
                     "model": "gpt-4o-mini",
                     "messages": conversation_history,
-                    "temperature": 0,
+                    "temperature": 0.5,
                     "response_format": response_format,
                 }
             )
@@ -263,7 +267,7 @@ Based on Error encountered while running task
         {"role": "system", "content": system_prompts},  # Keep system prompt
         {"role": "user", "content": update_task}   # Fresh user input
     ]
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=15.0) as client:
         try:
             response = await client.post(
                 BASE_URL + "/chat/completions",
@@ -271,7 +275,7 @@ Based on Error encountered while running task
                 json={
                     "model": "gpt-4o-mini",
                     "messages": conversation_history,
-                    "temperature": 0,
+                    "temperature": 0.5,
                     "response_format": response_format,
                 }
             )
@@ -303,10 +307,10 @@ Based on Error encountered while running task
         except Exception as e:
             raise HTTPException(
                 status_code=500, detail=f"Unexpected error: {str(e)}")
-        
+
 def save_script(inline_metadata_script: str, python_code: str) -> str:
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    script_path = os.path.abspath(f"script_{timestamp}.py")
+    script_path = os.path.abspath(
+        os.path.join(f"script_{uuid.uuid4().hex}.py"))
     try:
         with open(script_path, "w") as f:
             f.write(inline_metadata_script)
@@ -345,7 +349,8 @@ async def run_task(task: str = Query(..., description="Task description")):
     translated_task = await translate_to_english(task)
     task_description = translated_task["output"].strip().lower()
 
-    greetings = ["hi", "hello", "hey", "good morning","good afternoon", "good evening"]
+    greetings = ["hi", "hello", "hey", "good morning",
+                 "good afternoon", "good evening"]
 
     if task_description in greetings:
         return {"status": "success", "message": "Hello! How can I assist you?"}
@@ -369,44 +374,36 @@ async def run_task(task: str = Query(..., description="Task description")):
 
     # Continue with normal task execution
     try:
-        # Normalize spaces (remove extra spaces and replace multiple spaces with a single space)
-        task_description = re.sub(r'\s+', ' ', task_description.strip())
-        task_description = task_description.replace("```", "").replace("`", "").replace('"', "")
-        instructions_for_task = await call_gpt(task_description)
-        response, script_path = await generate_python_script(instructions_for_task)
+        response, script_path = await generate_python_script(task_description)
         execution_output = execute_script(script_path)
-        retry_limit = 1  # Allow up to 1 retries
+        retry_limit = 2  # Allow up to 2 retries
         for _ in range(retry_limit):
             execution_error = execution_output.get('error')
             if not execution_error:
-                response =  {
+                return {
                     "status": "Success",
-                    "task": task_description,
-                    "instructions": instructions_for_task,
+                    "response": response,
                     "script_path": script_path,
                     "message": "Task executed successfully"
                 }
-                return response
+
             # Retry if an error occurs
-            with open(script_path, 'r') as f:
+            with open(script_path, 'r', encoding="utf-8") as f:
                 python_code = f.read()
 
             response, script_path = await resend_request(
-                task_description=instructions_for_task,
+                task_description=task_description,
                 python_code=python_code,
                 error=execution_error
             )
             execution_output = execute_script(script_path)  # Retry execution
 
-        response= {
-            "status": "Fail",
-            "task": task_description,
-            "instructions": instructions_for_task,
-            "script_path": script_path,
+        return {
+            "status": "Failed",
             "error": execution_output.get('error'),
+            "script_path": script_path,
             "message": "Task Execution Failed"
         }
-        raise HTTPException(status_code=400, detail=response)
 
     except HTTPException as e:
         raise e  # Keep HTTP exception intact
@@ -415,65 +412,26 @@ async def run_task(task: str = Query(..., description="Task description")):
 
 @app.get("/read")
 async def read_file(path: str = Query(..., description="Path to the file to read")):
-    root = os.getcwd()
-    full_path = os.path.abspath(os.path.join(root, path))
-    if not full_path.startswith('/data/'):
-        raise HTTPException(status_code=400, detail="Invalid file path.")
-
-    if not os.path.exists(full_path) or not os.path.isfile(full_path):
+    if not path:
+        raise HTTPException(status_code=400, detail="Path is empty.")
+    if not path.startswith("/data/"):
+        raise HTTPException(
+            status_code=400, detail="Access to files outside /data is not allowed.")
+    path = os.path.abspath(os.path.join("./data", path.lstrip("/data/")))
+    print(path)
+    if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File not found.")
-
     try:
-        file_extension = full_path.suffix.lower()
-        if file_extension in [".txt", ".log", ".md", ".xml", ".yaml", ".yml", ".ini", ".conf", ".sql", ".bat", ".sh"]:
-            with open(full_path, "r", encoding="utf-8") as file:
-                return PlainTextResponse(content=file.read())
-
-        elif file_extension == ".json":
-            with open(full_path, "r", encoding="utf-8") as file:
-                data = json.load(file)
-            return JSONResponse(content=json.dumps(data, separators=(",", ":")), media_type="application/json")
-
-        elif file_extension == ".csv":
-            with open(full_path, "r", encoding="utf-8") as file:
-                reader = csv.reader(file)
-                data = [row for row in reader]
-            return JSONResponse(content=json.dumps({"data": data}, separators=(",", ":")), media_type="application/json")
-
-        elif file_extension in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
-            return FileResponse(full_path, media_type=f"image/{file_extension.lstrip('.')}")
-
-        else:
-            return FileResponse(full_path)  # Default case for other file types
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=500, detail="File encoding error.")
+        with open(path, "r") as file:
+            content = file.read()
+        return content
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
-
-def write_to_file(filename, content):
-    with open(filename, 'w') as file:
-        file.write(content)
-
-async def call_gpt(task_description: str) -> str:
-    os.makedirs("task_description", exist_ok=True)
-    payload = {
-    "model": "gpt-4o-mini",  # Ensure this model is valid
-    "messages": [
-        {"role": "system","content": f"Rewrite the task description by replacing 'LLM' with 'gpt-4o-mini.' Also, check for phrases like 'Only write' or 'Just write' and refine them for better clarity. Finally, simplify the task description into clear and concise English while preserving its original meaning.: '{task_description}'"},
-        {"role": "user","content": task_description}]
-            ,"temperature": 0}
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(f"{BASE_URL}/chat/completions", headers=HEADERS, json=payload)
-            response.raise_for_status()
-            content = response.json().get("choices", [{}])[
-                0].get("message", {}).get("content", "")
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-            write_to_file(f"task_description/task_instructions_{timestamp}.txt", content)
-            return content
-    except Exception as e:
-        return f"Error: {str(e)}"
+        raise HTTPException(
+            status_code=500, detail=f"Error reading file: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
+    os.makedirs("data", exist_ok=True)
     uvicorn.run(app, host="0.0.0.0", port=8000)

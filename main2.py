@@ -17,7 +17,7 @@ import sys
 from fastapi import FastAPI, HTTPException, Request  # type: ignore
 from fastapi.responses import JSONResponse, Response  # type: ignore
 from fastapi.middleware.cors import CORSMiddleware
-import ffmpeg
+import ffmpeg # type: ignore
 import pytesseract  # type: ignore
 from PIL import Image, ImageEnhance, ImageFilter
 import base64
@@ -25,12 +25,12 @@ import requests
 import sqlite3
 from typing import List, Dict, Any
 import csv
-import markdown2
+import markdown2 # type: ignore
 from pydantic import BaseModel  # type: ignore
 from bs4 import BeautifulSoup
 import wave
 import json
-from vosk import Model, KaldiRecognizer
+from vosk import Model, KaldiRecognizer # type: ignore
 
 # Initialize FastAPI app
 app = FastAPI()
